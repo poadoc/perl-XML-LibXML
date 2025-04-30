@@ -20,6 +20,7 @@ extern "C" {
 #include "ppport.h"
 
 #include <stdlib.h>
+#include <string.h>
 #include <libxml/xmlmemory.h>
 #include <libxml/parser.h>
 #include <libxml/parserInternals.h>
@@ -639,6 +640,34 @@ PmmGenNsName( const xmlChar * name, const xmlChar * nsURI )
     return retval;
 }
 
+/* If a value argument does not contain "&#38;", the value pointer is returned.
+ * Otherwise a new xmlChar * string is allocated, the value copied there and
+ * "&#38;" occurences replaced with "&". Then the caller must free it. */
+static
+xmlChar *
+_expandAmp( const xmlChar *value )
+{
+    xmlChar *expanded = NULL;
+    const xmlChar *entity;
+    int length;
+
+    if (value == NULL ||
+            (NULL == (entity = (const xmlChar *)strstr((const char *)value, "&#38;")))) {
+        return (xmlChar *)value;
+    }
+
+    do {
+        length = entity - value;
+        expanded = xmlStrncat(expanded, value, length);
+        expanded = xmlStrncat(expanded, (const xmlChar *)"&", 1);
+        value += length + 5; /* "&#38;" */
+    } while (NULL != (entity = (const xmlChar*)strstr((const char *)value, "&#38;")));
+
+    expanded = xmlStrcat(expanded, value);
+
+    return expanded;
+}
+
 HV *
 PmmGenAttributeHashSV( pTHX_ PmmSAXVectorPtr sax,
                        const xmlChar **attr, SV * handler )
@@ -653,8 +682,8 @@ PmmGenAttributeHashSV( pTHX_ PmmSAXVectorPtr sax,
     const xmlChar * nsURI = NULL;
     const xmlChar **ta    = attr;
     const xmlChar * name  = NULL;
-    const xmlChar * value = NULL;
 
+    xmlChar * value       = NULL;
     xmlChar * keyname     = NULL;
     xmlChar * localname   = NULL;
     xmlChar * prefix      = NULL;
@@ -665,7 +694,13 @@ PmmGenAttributeHashSV( pTHX_ PmmSAXVectorPtr sax,
         while ( *ta != NULL ) {
             atV = newHV();
             name = *ta;  ta++;
-            value = *ta; ta++;
+            /* XXX: libxml2 SAX2 interface does not expand &#38;
+             * entity in the attribute values
+             * <https://bugzilla.gnome.org/show_bug.cgi?id=316487>
+             * resulting in stray "&#38;" sequences after disabling
+             * external entity expansion
+             * <https://rt.cpan.org/Ticket/Display.html?id=131498>. */
+            value = _expandAmp(*ta);
 
             if ( name != NULL && XML_STR_NOT_EMPTY( name ) ) {
                 localname = xmlSplitQName(NULL, name, &prefix);
@@ -754,6 +789,11 @@ PmmGenAttributeHashSV( pTHX_ PmmSAXVectorPtr sax,
                 prefix    = NULL;
 
             }
+
+            if (value != *ta) {
+                xmlFree(value);
+            }
+            ta++;
         }
     }
 
